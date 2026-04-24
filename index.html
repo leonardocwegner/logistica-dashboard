@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard · Diagnóstico Lead Time de Promessa</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0F172A; color: #F1F5F9; font-family: 'Inter', -apple-system, sans-serif; min-height: 100vh; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #1E293B; }
+    ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+    select { appearance: none; -webkit-appearance: none; }
+    table { border-collapse: collapse; width: 100%; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+  const {
+    LineChart, Line, BarChart, Bar, AreaChart, Area,
+    ComposedChart, ScatterChart, Scatter,
+    XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+    ResponsiveContainer, ReferenceLine, Cell, PieChart, Pie
+  } = Recharts;
+
+  // ─── Paleta ──────────────────────────────────────────────────────────────────
+  const C = {
+    full:   '#3B82F6', xdock: '#F59E0B', drop: '#10B981', flex: '#8B5CF6',
+    red:    '#EF4444', green: '#22C55E', yellow: '#EAB308',
+    bg:     '#0F172A', card:  '#1E293B', card2: '#0F1F33',
+    border: '#334155', text:  '#F1F5F9', muted: '#94A3B8', dim: '#475569',
+  };
+  const PCOLORS = { Full: C.full, Crossdocking: C.xdock, Dropshipping: C.drop, Flex: C.flex };
+
+  // ─── Seed de dados simulados ──────────────────────────────────────────────────
+  function seeded(seed) {
+    let s = seed;
+    return () => { s = (s * 16807 + 0) % 2147483647; return (s - 1) / 2147483646; };
+  }
+
+  const DOMAINS   = ['Eletrônicos', 'Eletrodomésticos', 'Moda', 'Casa e Decoração', 'Esportes', 'Automotivo', 'Informática'];
+  const ESTADOS   = ['SP','RJ','MG','RS','PR','BA','CE','AM','PA','SC','GO','PE','DF','ES','MT'];
+  const PICKINGS  = ['Full','Crossdocking','Dropshipping','Flex'];
+  const RANGOS    = ['R$0-50','R$50-150','R$150-500','R$500-1500','R$1500+'];
+
+  // Gera série temporal semanal Jan/2025–Mar/2026
+  function buildTimeSeries() {
+    const rand = seeded(42);
+    const rows = [];
+    let dt = new Date('2025-01-06');
+    const end = new Date('2026-03-30');
+    while (dt <= end) {
+      const iso = dt.toISOString().slice(0,10);
+      const isBF    = dt >= new Date('2025-11-03') && dt <= new Date('2025-12-29');
+      const isPost  = dt >= new Date('2026-01-05');
+      const spike   = isBF ? 2.6 : isPost ? 1.9 : 0;
+      const cDrop   = isBF ? -0.014 : isPost ? -0.010 : 0;
+      const fShare  = Math.max(0.30, 0.56 + (isBF ? -0.13 : isPost ? -0.09 : 0) + (rand()-0.5)*0.02);
+      const xShare  = Math.min(0.55, 0.27 + (isBF ?  0.10 : isPost ?  0.07 : 0) + (rand()-0.5)*0.02);
+      const dShare  = 0.09 + (isBF ? 0.02 : isPost ? 0.01 : 0) + (rand()-0.5)*0.01;
+      const lShare  = Math.max(0.03, 1 - fShare - xShare - dShare);
+      rows.push({
+        date: iso,
+        label: iso.slice(0,7),
+        Full_p:    +(2.1 + (isBF?1.3:isPost?0.9:0) + (rand()-0.5)*0.3).toFixed(2),
+        Xdock_p:   +(4.9 + (isBF?3.2:isPost?2.3:0) + (rand()-0.5)*0.5).toFixed(2),
+        Drop_p:    +(6.3 + (isBF?2.9:isPost?2.1:0) + (rand()-0.5)*0.6).toFixed(2),
+        Flex_p:    +(3.2 + (isBF?1.6:isPost?1.1:0) + (rand()-0.5)*0.3).toFixed(2),
+        Full_c:    +Math.max(0.01, 0.083 + cDrop + (rand()-0.5)*0.005).toFixed(4),
+        Xdock_c:   +Math.max(0.01, 0.062 + cDrop*1.3 + (rand()-0.5)*0.004).toFixed(4),
+        Full_s:    +fShare.toFixed(3),
+        Xdock_s:   +xShare.toFixed(3),
+        Drop_s:    +dShare.toFixed(3),
+        Flex_s:    +lShare.toFixed(3),
+        visitas:   Math.round((isBF?380000:isPost?210000:195000) * (0.8+rand()*0.4)),
+        pedidos:   Math.round((isBF?28000:isPost?13500:14800) * (0.8+rand()*0.4)),
+      });
+      dt.setDate(dt.getDate() + 7);
+    }
+    return rows;
+  }
+
+  // Ofensores
+  function buildOffenders() {
+    return [
+      {estado:'AM',picking:'Crossdocking',rango:'R$500-1500',dp:4.2,dc:-18.3,imp:9.8},
+      {estado:'PA',picking:'Crossdocking',rango:'R$150-500', dp:3.8,dc:-15.1,imp:7.2},
+      {estado:'BA',picking:'Dropshipping', rango:'R$500-1500',dp:3.5,dc:-14.7,imp:6.1},
+      {estado:'CE',picking:'Crossdocking',rango:'R$0-50',    dp:2.9,dc:-11.2,imp:5.4},
+      {estado:'RJ',picking:'Crossdocking',rango:'R$1500+',   dp:2.6,dc:-12.8,imp:4.9},
+      {estado:'SP',picking:'Dropshipping', rango:'R$1500+',   dp:2.1,dc:-9.4, imp:4.2},
+      {estado:'MG',picking:'Crossdocking',rango:'R$150-500', dp:1.9,dc:-7.8, imp:3.8},
+      {estado:'PE',picking:'Crossdocking',rango:'R$50-150',  dp:1.7,dc:-6.9, imp:3.1},
+      {estado:'GO',picking:'Dropshipping', rango:'R$500-1500',dp:1.5,dc:-6.1, imp:2.7},
+      {estado:'MT',picking:'Crossdocking',rango:'R$150-500', dp:1.4,dc:-5.8, imp:2.3},
+    ];
+  }
+
+  // Elasticidade por ASP
+  const ELASTICITY = [
+    {rango:'R$0-50',    ela:-2.1, conv25:0.091, conv26:0.083},
+    {rango:'R$50-150',  ela:-3.4, conv25:0.082, conv26:0.072},
+    {rango:'R$150-500', ela:-4.8, conv25:0.071, conv26:0.059},
+    {rango:'R$500-1500',ela:-6.2, conv25:0.058, conv26:0.043},
+    {rango:'R$1500+',   ela:-8.9, conv25:0.041, conv26:0.026},
+  ];
+
+  // Heatmap estados
+  const STATE_DATA = [
+    {estado:'AM',dp:4.2},{estado:'PA',dp:3.8},{estado:'CE',dp:3.1},{estado:'BA',dp:3.5},
+    {estado:'PE',dp:2.5},{estado:'MA',dp:2.9},{estado:'RN',dp:2.2},{estado:'PI',dp:2.7},
+    {estado:'RJ',dp:2.6},{estado:'ES',dp:1.8},{estado:'MG',dp:1.9},{estado:'SP',dp:1.5},
+    {estado:'PR',dp:1.3},{estado:'SC',dp:1.1},{estado:'RS',dp:1.0},{estado:'GO',dp:1.7},
+    {estado:'DF',dp:1.4},{estado:'MT',dp:2.0},{estado:'MS',dp:1.6},{estado:'TO',dp:2.4},
+    {estado:'RO',dp:2.8},{estado:'AC',dp:3.3},{estado:'AP',dp:3.6},{estado:'RR',dp:3.9},
+  ].sort((a,b)=>b.dp-a.dp);
+
+  const TS = buildTimeSeries();
+  const OFFENDERS = buildOffenders();
+
+  // ─── Componente principal ─────────────────────────────────────────────────────
+  function Dashboard() {
+    const [fDomain,  setFDomain]  = React.useState('Todos');
+    const [fEstado,  setFEstado]  = React.useState('Todos');
+    const [fPicking, setFPicking] = React.useState('Todos');
+    const [fRango,   setFRango]   = React.useState('Todos');
+    const [tab,      setTab]      = React.useState('overview');
+
+    // KPI dinâmico por filtro
+    const kpi = React.useMemo(() => {
+      const pm = fPicking === 'Crossdocking' ? 1.42 : fPicking === 'Dropshipping' ? 1.65 : fPicking === 'Flex' ? 1.18 : 1.0;
+      const em = ['AM','PA','RO','AC','AP','RR','CE','BA','MA'].includes(fEstado) ? 1.32 : 1.0;
+      return {
+        p25: +(3.4  * pm * em).toFixed(1),
+        p26: +(5.1  * pm * em).toFixed(1),
+        c25: 0.0718, c26: 0.0631,
+        ela: -4.8,
+        perdidos: Math.round(820000 * pm * em),
+      };
+    }, [fEstado, fPicking]);
+
+    const dP = +(kpi.p26 - kpi.p25).toFixed(1);
+    const dC = +(((kpi.c26 - kpi.c25)/kpi.c25)*100).toFixed(1);
+
+    const offenders = React.useMemo(() => {
+      return OFFENDERS.filter(r =>
+        (fEstado  === 'Todos' || r.estado  === fEstado) &&
+        (fPicking === 'Todos' || r.picking === fPicking) &&
+        (fRango   === 'Todos' || r.rango   === fRango)
+      );
+    }, [fEstado, fPicking, fRango]);
+
+    const elasticity = React.useMemo(() => {
+      return fRango === 'Todos' ? ELASTICITY : ELASTICITY.filter(r => r.rango === fRango);
+    }, [fRango]);
+
+    // Série com breakpoint calculado
+    const tsWithDev = React.useMemo(() => {
+      return TS.map((row, i) => {
+        const window = TS.slice(Math.max(0,i-13), Math.max(0,i-4));
+        const base = window.length > 0 ? window.reduce((s,x)=>s+x.Xdock_p,0)/window.length : row.Xdock_p;
+        return { ...row, dev: i > 12 ? +(row.Xdock_p - base).toFixed(2) : 0 };
+      });
+    }, []);
+
+    return (
+      <div style={{minHeight:'100vh',background:C.bg,color:C.text,fontFamily:'Inter,-apple-system,sans-serif'}}>
+        {/* ── Topbar ── */}
+        <div style={{background:C.card,borderBottom:`1px solid ${C.border}`,padding:'14px 28px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+          <div>
+            <div style={{display:'flex',alignItems:'center',gap:10}}>
+              <div style={{width:32,height:32,background:'linear-gradient(135deg,#3B82F6,#8B5CF6)',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:14}}>BI</div>
+              <div>
+                <div style={{fontWeight:700,fontSize:16}}>Diagnóstico · Lead Time de Promessa</div>
+                <div style={{fontSize:11,color:C.muted}}>Comparativo Q1 2026 vs Q1 2025 · meli-bi-data.DADOSNN.TBL_VISITAS_POR_PROMESSA_POR_RANGO_NN</div>
+              </div>
+            </div>
+          </div>
+          <div style={{fontSize:11,color:C.muted,background:`${C.red}15`,border:`1px solid ${C.red}30`,padding:'4px 10px',borderRadius:20}}>
+            ⚠ Dados simulados — conecte ao BigQuery para dados reais
+          </div>
+        </div>
+
+        <div style={{padding:'20px 28px'}}>
+
+          {/* ── Filtros ── */}
+          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'16px 20px',marginBottom:20,display:'flex',gap:20,flexWrap:'wrap',alignItems:'flex-end'}}>
+            {[
+              {label:'Categoria (Domain)', val:fDomain, set:setFDomain, opts:['Todos',...DOMAINS]},
+              {label:'Estado',             val:fEstado, set:setFEstado, opts:['Todos',...ESTADOS]},
+              {label:'Picking Type',       val:fPicking,set:setFPicking,opts:['Todos',...PICKINGS]},
+              {label:'Rango ASP',          val:fRango,  set:setFRango,  opts:['Todos',...RANGOS]},
+            ].map(({label,val,set,opts}) => (
+              <div key={label} style={{display:'flex',flexDirection:'column',gap:4}}>
+                <span style={{color:C.muted,fontSize:11,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.05em'}}>{label}</span>
+                <div style={{position:'relative'}}>
+                  <select value={val} onChange={e=>set(e.target.value)}
+                    style={{background:'#0F1A2E',color:C.text,border:`1px solid ${C.border}`,borderRadius:7,
+                      padding:'7px 32px 7px 12px',fontSize:13,cursor:'pointer',outline:'none',minWidth:160}}>
+                    {opts.map(o=><option key={o} value={o}>{o}</option>)}
+                  </select>
+                  <span style={{position:'absolute',right:10,top:'50%',transform:'translateY(-50%)',pointerEvents:'none',color:C.muted,fontSize:10}}>▼</span>
+                </div>
+              </div>
+            ))}
+            <button onClick={()=>{setFDomain('Todos');setFEstado('Todos');setFPicking('Todos');setFRango('Todos');}}
+              style={{marginLeft:'auto',background:'transparent',border:`1px solid ${C.border}`,color:C.muted,
+                borderRadius:7,padding:'7px 14px',fontSize:12,cursor:'pointer',alignSelf:'flex-end'}}>
+              ↺ Limpar filtros
+            </button>
+          </div>
+
+          {/* ── KPI Cards ── */}
+          <div style={{display:'flex',gap:14,flexWrap:'wrap',marginBottom:20}}>
+            {[
+              {t:'Promessa Q1 2026', v:`${kpi.p26}d`, d:`+${dP}d`, dc:'#FCA5A5', ds:true, sub:'Média ponderada por visitas'},
+              {t:'Promessa Q1 2025', v:`${kpi.p25}d`, d:null, sub:'Baseline de referência'},
+              {t:'Conversão Q1 2026', v:`${(kpi.c26*100).toFixed(2)}%`, d:`${dC}pp`, dc:'#FCA5A5', ds:false, sub:'Pedidos ÷ Visitas'},
+              {t:'Conversão Q1 2025', v:`${(kpi.c25*100).toFixed(2)}%`, d:null, sub:'Baseline de referência'},
+              {t:'Elasticidade Promessa', v:`${kpi.ela}%/dia`, d:null, sub:`-1d promessa → +${Math.abs(kpi.ela)}% conversão`, hl:true},
+              {t:'Pedidos Perdidos Est.', v:`~${(kpi.perdidos/1000).toFixed(0)}k`, d:null, sub:'Δ conversão Q1/26 vs Q1/25 × visitas', hl:true},
+            ].map(({t,v,d,dc,ds,sub,hl})=>(
+              <div key={t} style={{background:C.card,border:`1px solid ${hl?C.red:C.border}`,borderRadius:10,padding:'14px 18px',flex:'1 1 150px',minWidth:150}}>
+                <div style={{color:C.muted,fontSize:11,marginBottom:6}}>{t}</div>
+                <div style={{fontSize:26,fontWeight:700,lineHeight:1}}>{v}</div>
+                {d && <div style={{color:dc,fontSize:12,marginTop:5,fontWeight:600}}>{ds?'▲':'▼'} {Math.abs(d)} <span style={{color:C.muted,fontWeight:400}}>vs Q1 2025</span></div>}
+                <div style={{color:C.dim,fontSize:10,marginTop:4}}>{sub}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* ── Tabs ── */}
+          <div style={{display:'flex',gap:2,borderBottom:`1px solid ${C.border}`,marginBottom:20}}>
+            {[
+              {id:'overview',   l:'📊 Visão Geral'},
+              {id:'breakpoint', l:'🔍 Breakpoint'},
+              {id:'offenders',  l:'🎯 Ofensores'},
+              {id:'elasticity', l:'📐 Elasticidade'},
+              {id:'mix',        l:'🔄 Mix Logístico'},
+              {id:'hypotheses', l:'💡 Hipóteses'},
+            ].map(({id,l})=>(
+              <button key={id} onClick={()=>setTab(id)}
+                style={{background:tab===id?C.full:'transparent',color:tab===id?'#fff':C.muted,
+                  border:'none',borderRadius:'6px 6px 0 0',padding:'8px 16px',cursor:'pointer',
+                  fontSize:13,fontWeight:500,transition:'all 0.15s'}}>
+                {l}
+              </button>
+            ))}
+          </div>
+
+          {/* ════════════════ TAB: VISÃO GERAL ════════════════ */}
+          {tab === 'overview' && (
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:18}}>
+              <ChartCard title="Promessa Média por Picking Type (Semanal)" sub="Dias — média ponderada por visitas">
+                <ResponsiveContainer width="100%" height={280}>
+                  <LineChart data={TS}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                    <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} interval={7} />
+                    <YAxis tick={{fill:C.muted,fontSize:10}} unit="d" domain={['auto','auto']} />
+                    <Tooltip contentStyle={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8}} />
+                    <Legend wrapperStyle={{fontSize:12}} />
+                    <ReferenceLine x="2025-11" stroke={C.red} strokeDasharray="4 2" label={{value:'Black Friday',fill:C.red,fontSize:10,position:'insideTopRight'}} />
+                    <ReferenceLine x="2026-01" stroke={C.yellow} strokeDasharray="4 2" label={{value:'Q1 2026',fill:C.yellow,fontSize:10,position:'insideTopRight'}} />
+                    {[['Full_p','Full',C.full],['Xdock_p','Crossdocking',C.xdock],['Drop_p','Dropshipping',C.drop],['Flex_p','Flex',C.flex]].map(([k,n,c])=>(
+                      <Line key={k} type="monotone" dataKey={k} name={n} stroke={c} strokeWidth={2} dot={false} />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </ChartCard>
+
+              <ChartCard title="Taxa de Conversão — Full vs Crossdocking" sub="Pedidos ÷ Visitas (%)">
+                <ResponsiveContainer width="100%" height={280}>
+                  <ComposedChart data={TS}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                    <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} interval={7} />
+                    <YAxis tick={{fill:C.muted,fontSize:10}} tickFormatter={v=>`${(v*100).toFixed(1)}%`} domain={['auto','auto']} />
+                    <Tooltip contentStyle={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8}} formatter={v=>`${(v*100).toFixed(2)}%`} />
+                    <Legend wrapperStyle={{fontSize:12}} />
+                    <ReferenceLine x="2025-11" stroke={C.red} strokeDasharray="4 2" />
+                    <Area type="monotone" dataKey="Full_c" name="Full" fill={`${C.full}25`} stroke={C.full} strokeWidth={2} />
+                    <Line type="monotone" dataKey="Xdock_c" name="Crossdocking" stroke={C.xdock} strokeWidth={2} dot={false} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </ChartCard>
+
+              <ChartCard title="Promessa Ponderada Geral (Todas Modalidades)" sub="Calculada pelo mix de share × promessa de cada picking">
+                <ResponsiveContainer width="100%" height={250}>
+                  <AreaChart data={TS.map(r=>({...r,
+                    p_media: +(r.Full_p*r.Full_s + r.Xdock_p*r.Xdock_s + r.Drop_p*r.Drop_s + r.Flex_p*r.Flex_s).toFixed(2)
+                  }))}>
+                    <defs>
+                      <linearGradient id="gradP" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor={C.full} stopOpacity={0.4}/>
+                        <stop offset="95%" stopColor={C.full} stopOpacity={0}/>
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                    <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} interval={7} />
+                    <YAxis tick={{fill:C.muted,fontSize:10}} unit="d" domain={['auto','auto']} />
+                    <Tooltip contentStyle={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8}} formatter={v=>`${v}d`} />
+                    <ReferenceLine x="2025-11" stroke={C.red} strokeDasharray="4 2" label={{value:'Black Friday',fill:C.red,fontSize:10}} />
+                    <Area type="monotone" dataKey="p_media" name="Promessa Média Geral" stroke={C.full} fill="url(#gradP)" strokeWidth={2} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </ChartCard>
+
+              <ChartCard title="Comparativo Q1 2025 vs Q1 2026 por Picking Type" sub="Variação em dias de promessa">
+                <ResponsiveContainer width="100%" height={250}>
+                  <BarChart data={[
+                    {picking:'Full',       q25:2.1, q26:3.0},
+                    {picking:'Crossdocking',q25:4.9,q26:7.2},
+                    {picking:'Dropshipping',q25:6.3,q26:8.4},
+                    {picking:'Flex',       q25:3.2, q26:4.3},
+                  ]}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                    <XAxis dataKey="picking" tick={{fill:C.muted,fontSize:11}} />
+                    <YAxis tick={{fill:C.muted,fontSize:10}} unit="d" />
+                    <Tooltip contentStyle={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8}} formatter={v=>`${v}d`} />
+                    <Legend wrapperStyle={{fontSize:12}} />
+                    <Bar dataKey="q25" name="Q1 2025" fill={C.full} opacity={0.7} radius={[3,3,0,0]} />
+                    <Bar dataKey="q26" name="Q1 2026" fill={C.red}  opacity={0.85} radius={[3,3,0,0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </ChartCard>
+            </div>
+          )}
+
+          {/* ════════════════ TAB: BREAKPOINT ════════════════ */}
+          {tab === 'breakpoint' && (
+            <div style={{display:'grid',gridTemplateColumns:'1fr',gap:18}}>
+              <ChartCard title="Detecção de Ruptura — Promessa Crossdocking com Desvio vs Baseline (90 dias)" sub="Barra vermelha = desvio positivo acima da média histórica de 90 dias anteriores">
+                <ResponsiveContainer width="100%" height={360}>
+                  <ComposedChart data={tsWithDev}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                    <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} interval={6} />
+                    <YAxis yAxisId="l" tick={{fill:C.muted,fontSize:10}} unit="d" />
+                    <YAxis yAxisId="r" orientation="right" tick={{fill:C.muted,fontSize:10}} unit="d" />
+                    <Tooltip contentStyle={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8}} formatter={v=>`${v}d`} />
+                    <Legend wrapperStyle={{fontSize:12}} />
+                    <ReferenceLine yAxisId="r" y={1.5} stroke={C.red} strokeDasharray="4 2"
+                      label={{value:'Threshold +1.5d',fill:C.red,fontSize:10,position:'insideTopRight'}} />
+                    <ReferenceLine x="2025-11" stroke={C.red} strokeDasharray="6 2"
+                      label={{value:'Nov 2025 · Ruptura',fill:C.red,fontSize:10}} />
+                    <ReferenceLine x="2026-01" stroke={C.yellow} strokeDasharray="4 2"
+                      label={{value:'Q1 2026 (não normalizou)',fill:C.yellow,fontSize:10}} />
+                    <Line yAxisId="l" type="monotone" dataKey="Xdock_p" name="Promessa Crossdocking" stroke={C.xdock} strokeWidth={2} dot={false} />
+                    <Bar yAxisId="r" dataKey="dev" name="Desvio vs Baseline" fill={C.red} opacity={0.65} radius={[2,2,0,0]} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+                <AlertBox color={C.red} text="Breakpoint identificado: semana de 03/11/2025 — Crossdocking registrou +2.8d acima da baseline. A ruptura se manteve nas 20 semanas seguintes sem normalização." />
+              </ChartCard>
+
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:18}}>
+                <ChartCard title="Volume de Visitas — Sazonalidade" sub="Pico Black Friday e impacto no trimestre seguinte">
+                  <ResponsiveContainer width="100%" height={220}>
+                    <AreaChart data={TS}>
+                      <defs>
+                        <linearGradient id="gradV" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={C.full} stopOpacity={0.5}/>
+                          <stop offset="95%" stopColor={C.full} stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                      <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} interval={7} />
+                      <YAxis tick={{fill:C.muted,fontSize:10}} tickFormatter={v=>`${(v/1000).toFixed(0)}k`} />
+                      <Tooltip contentStyle={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8}} formatter={v=>v.toLocaleString('pt-BR')} />
+                      <ReferenceLine x="2025-11" stroke={C.red} strokeDasharray="4 2" />
+                      <Area type="monotone" dataKey="visitas" name="Visitas" stroke={C.full} fill="url(#gradV)" strokeWidth={2} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </ChartCard>
+
+                <ChartCard title="Taxa de Conversão — Efeito Ressaca" sub="Queda pós-pico que persistiu em Q1 2026">
+                  <ResponsiveContainer width="100%" height={220}>
+                    <ComposedChart data={TS.map(r=>({...r,
+                      conv: +((r.pedidos/r.visitas)*100).toFixed(2)
+                    }))}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                      <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} interval={7} />
+                      <YAxis tick={{fill:C.muted,fontSize:10}} unit="%" domain={['auto','auto']} />
+                      <Tooltip contentStyle={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8}} formatter={v=>`${v}%`} />
+                      <ReferenceLine x="2025-11" stroke={C.red} strokeDasharray="4 2" />
+                      <Area type="monotone" dataKey="conv" name="Conversão" stroke={C.green} fill={`${C.green}25`} strokeWidth={2} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </ChartCard>
+              </div>
+            </div>
+          )}
+
+          {/* ════════════════ TAB: OFENSORES ════════════════ */}
+          {tab === 'offenders' && (
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:18}}>
+              <div style={{gridColumn:'1/-1'}}>
+                <ChartCard title={`Top Ofensores — Ranking por Impacto (Δ Dias × Volume) · ${offenders.length} resultados`} sub="Filtros aplicados: Estado / Picking / Rango acima">
+                  {offenders.length === 0
+                    ? <div style={{padding:40,textAlign:'center',color:C.muted}}>Nenhum ofensor encontrado para os filtros selecionados.</div>
+                    : (
+                      <div style={{overflowX:'auto'}}>
+                        <table style={{fontSize:13}}>
+                          <thead>
+                            <tr style={{borderBottom:`1px solid ${C.border}`}}>
+                              {['#','Estado','Picking Type','ASP Range','Δ Promessa','Δ Conversão','Impacto (MM)'].map(h=>(
+                                <th key={h} style={{padding:'8px 14px',textAlign:'left',color:C.muted,fontWeight:600,whiteSpace:'nowrap'}}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {offenders.map((r,i)=>(
+                              <tr key={i} style={{borderBottom:`1px solid ${C.border}20`,background:i===0?`${C.red}08`:'transparent'}}>
+                                <td style={{padding:'10px 14px',color:C.muted}}>{i+1}</td>
+                                <td style={{padding:'10px 14px'}}>
+                                  <Tag color={['AM','PA','RO','AC','AP','RR'].includes(r.estado)?C.red:C.full}>{r.estado}</Tag>
+                                </td>
+                                <td style={{padding:'10px 14px'}}><Tag color={PCOLORS[r.picking]}>{r.picking}</Tag></td>
+                                <td style={{padding:'10px 14px',color:C.muted}}>{r.rango}</td>
+                                <td style={{padding:'10px 14px',color:C.red,fontWeight:700}}>+{r.dp}d</td>
+                                <td style={{padding:'10px 14px',color:'#FCA5A5'}}>{r.dc}%</td>
+                                <td style={{padding:'10px 14px'}}>
+                                  <div style={{display:'flex',alignItems:'center',gap:8}}>
+                                    <div style={{height:8,borderRadius:4,background:C.red,width:`${(r.imp/9.8)*100}px`,minWidth:4}} />
+                                    <span style={{color:C.muted}}>{r.imp}M</span>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )
+                  }
+                </ChartCard>
+              </div>
+
+              <ChartCard title="Δ Promessa por Estado (Q1/26 vs Q1/25)" sub="Piores estados em vermelho — Norte/Nordeste lideram degradação">
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={STATE_DATA.slice(0,15)} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} horizontal={false} />
+                    <XAxis type="number" tick={{fill:C.muted,fontSize:10}} unit="d" />
+                    <YAxis type="category" dataKey="estado" tick={{fill:C.muted,fontSize:11}} width={32} />
+                    <Tooltip contentStyle={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8}} formatter={v=>`+${v}d`} />
+                    <Bar dataKey="dp" name="Δ Promessa" radius={[0,4,4,0]}>
+                      {STATE_DATA.slice(0,15).map((entry,i)=>(
+                        <Cell key={i} fill={entry.dp>=3?C.red:entry.dp>=2?C.yellow:C.full} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </ChartCard>
+
+              <ChartCard title="Distribuição de Ofensores por Picking Type" sub="% do impacto total por modalidade logística">
+                <ResponsiveContainer width="100%" height={300}>
+                  <PieChart>
+                    <Pie data={[
+                      {name:'Crossdocking',value:62,fill:C.xdock},
+                      {name:'Dropshipping', value:28,fill:C.drop},
+                      {name:'Flex',         value:7, fill:C.flex},
+                      {name:'Full',         value:3, fill:C.full},
+                    ]} cx="50%" cy="50%" outerRadius={100} dataKey="value"
+                      label={({name,value})=>`${name} ${value}%`}
+                      labelLine={{stroke:C.muted}}>
+                      {[C.xdock,C.drop,C.flex,C.full].map((c,i)=><Cell key={i} fill={c}/>)}
+                    </Pie>
+                    <Tooltip contentStyle={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8}} formatter={v=>`${v}%`} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </ChartCard>
+            </div>
+          )}
+
+          {/* ════════════════ TAB: ELASTICIDADE ════════════════ */}
+          {tab === 'elasticity' && (
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:18}}>
+              <ChartCard title="Elasticidade Promessa → Conversão por Rango de ASP" sub="% de queda na conversão para cada +1 dia adicional de promessa">
+                <ResponsiveContainer width="100%" height={280}>
+                  <BarChart data={elasticity} layout="vertical">
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} horizontal={false} />
+                    <XAxis type="number" tick={{fill:C.muted,fontSize:10}} unit="%" />
+                    <YAxis type="category" dataKey="rango" tick={{fill:C.muted,fontSize:11}} width={90} />
+                    <Tooltip contentStyle={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8}} formatter={v=>`${v}% por dia`} />
+                    <Bar dataKey="ela" name="Elasticidade (%/dia)" radius={[0,4,4,0]}>
+                      {elasticity.map((e,i)=>(
+                        <Cell key={i} fill={e.ela<-6?C.red:e.ela<-4?C.yellow:C.full} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+                <AlertBox color={C.yellow} text="Produtos de alto ticket (R$500+) são 3x mais sensíveis à promessa que os de baixo ticket. Priorize SLA para esse segmento." />
+              </ChartCard>
+
+              <ChartCard title="Impacto na Conversão — Q1 2025 vs Q1 2026 por ASP" sub="Conversão real observada em cada faixa de preço">
+                <ResponsiveContainer width="100%" height={280}>
+                  <BarChart data={elasticity}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                    <XAxis dataKey="rango" tick={{fill:C.muted,fontSize:10}} />
+                    <YAxis tick={{fill:C.muted,fontSize:10}} tickFormatter={v=>`${(v*100).toFixed(1)}%`} domain={[0,'auto']} />
+                    <Tooltip contentStyle={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8}} formatter={v=>`${(v*100).toFixed(2)}%`} />
+                    <Legend wrapperStyle={{fontSize:12}} />
+                    <Bar dataKey="conv25" name="Q1 2025" fill={C.full} opacity={0.8} radius={[3,3,0,0]} />
+                    <Bar dataKey="conv26" name="Q1 2026" fill={C.red}  opacity={0.85} radius={[3,3,0,0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </ChartCard>
+
+              <div style={{gridColumn:'1/-1'}}>
+                <ChartCard title="Calculadora de Impacto por Elasticidade" sub="Estimativa de pedidos recuperáveis por redução de promessa">
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{fontSize:13}}>
+                      <thead>
+                        <tr style={{borderBottom:`1px solid ${C.border}`}}>
+                          {['Rango ASP','Elast. (%/dia)','Conv Q1/25','Conv Q1/26','Δ Conv','Impacto -1d','Impacto -2d','Impacto -3d'].map(h=>(
+                            <th key={h} style={{padding:'8px 14px',textAlign:'left',color:C.muted,fontWeight:600,whiteSpace:'nowrap'}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {elasticity.map((r,i)=>{
+                          const dc = ((r.conv26-r.conv25)/r.conv25*100).toFixed(1);
+                          const recov1 = (r.conv26*(1+Math.abs(r.ela)/100)*1 - r.conv26).toFixed(3);
+                          const recov2 = (r.conv26*(1+Math.abs(r.ela)/100)*2 - r.conv26).toFixed(3);
+                          const recov3 = (r.conv26*(1+Math.abs(r.ela)/100)*3 - r.conv26).toFixed(3);
+                          return (
+                            <tr key={i} style={{borderBottom:`1px solid ${C.border}20`}}>
+                              <td style={{padding:'10px 14px',fontWeight:600}}>{r.rango}</td>
+                              <td style={{padding:'10px 14px',color:r.ela<-6?C.red:C.yellow}}>{r.ela}%</td>
+                              <td style={{padding:'10px 14px',color:C.green}}>{(r.conv25*100).toFixed(2)}%</td>
+                              <td style={{padding:'10px 14px',color:'#FCA5A5'}}>{(r.conv26*100).toFixed(2)}%</td>
+                              <td style={{padding:'10px 14px',color:C.red}}>{dc}pp</td>
+                              <td style={{padding:'10px 14px',color:C.green}}>+{(recov1*100).toFixed(2)}pp</td>
+                              <td style={{padding:'10px 14px',color:C.green}}>+{(recov2*100).toFixed(2)}pp</td>
+                              <td style={{padding:'10px 14px',color:C.green}}>+{(recov3*100).toFixed(2)}pp</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </ChartCard>
+              </div>
+            </div>
+          )}
+
+          {/* ════════════════ TAB: MIX LOGÍSTICO ════════════════ */}
+          {tab === 'mix' && (
+            <div style={{display:'grid',gridTemplateColumns:'1fr',gap:18}}>
+              <ChartCard title="Evolução do Share de Pedidos por Picking Type — Detecção de Mix Shift" sub="Full perdeu -12pp de share para Crossdocking entre Q3/2025 e Q1/2026">
+                <ResponsiveContainer width="100%" height={320}>
+                  <AreaChart data={TS}>
+                    <defs>
+                      {[['f',C.full],['x',C.xdock],['d',C.drop],['l',C.flex]].map(([id,color])=>(
+                        <linearGradient key={id} id={`g${id}`} x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor={color} stopOpacity={0.6}/>
+                          <stop offset="95%" stopColor={color} stopOpacity={0.1}/>
+                        </linearGradient>
+                      ))}
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} />
+                    <XAxis dataKey="label" tick={{fill:C.muted,fontSize:10}} interval={6} />
+                    <YAxis tick={{fill:C.muted,fontSize:10}} tickFormatter={v=>`${(v*100).toFixed(0)}%`} />
+                    <Tooltip contentStyle={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8}} formatter={v=>`${(v*100).toFixed(1)}%`} />
+                    <Legend wrapperStyle={{fontSize:12}} />
+                    <ReferenceLine x="2025-11" stroke={C.red} strokeDasharray="4 2" label={{value:'Ruptura Nov/25',fill:C.red,fontSize:10}} />
+                    {[['Full_s','Full','gf'],['Xdock_s','Crossdocking','gx'],['Drop_s','Dropshipping','gd'],['Flex_s','Flex','gl']].map(([k,n,g])=>(
+                      <Area key={k} type="monotone" dataKey={k} name={n} stroke={PCOLORS[n]} fill={`url(#${g})`} strokeWidth={2} />
+                    ))}
+                  </AreaChart>
+                </ResponsiveContainer>
+              </ChartCard>
+
+              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:14}}>
+                {[
+                  {modal:'Full',        q25:'55%',q26:'43%',delta:'-12pp',color:C.full,  icon:'▼',bad:true},
+                  {modal:'Crossdocking',q25:'28%',q26:'38%',delta:'+10pp',color:C.xdock, icon:'▲',bad:true},
+                  {modal:'Dropshipping', q25:'9%', q26:'12%',delta:'+3pp', color:C.drop,  icon:'▲',bad:true},
+                  {modal:'Flex',        q25:'8%', q26:'7%', delta:'-1pp', color:C.flex,  icon:'▼',bad:false},
+                ].map(m=>(
+                  <div key={m.modal} style={{background:`${m.color}12`,border:`1px solid ${m.color}35`,borderRadius:10,padding:'16px',textAlign:'center'}}>
+                    <div style={{color:m.color,fontWeight:700,fontSize:15,marginBottom:6}}>{m.modal}</div>
+                    <div style={{fontSize:24,fontWeight:800,color:m.bad?(m.icon==='▼'?C.red:C.red):C.muted}}>{m.delta}</div>
+                    <div style={{fontSize:11,color:C.muted,marginTop:6}}>Q1/25: {m.q25} → Q1/26: {m.q26}</div>
+                  </div>
+                ))}
+              </div>
+
+              <ChartCard title="Decomposição: Quanto do Δ Promessa é Logística Real vs Mix Shift?" sub="Se todo o share fosse mantido igual ao Q1/25, a promessa teria subido apenas 0.8d (vs 1.7d real)">
+                <ResponsiveContainer width="100%" height={180}>
+                  <BarChart layout="vertical" data={[
+                    {label:'Δ Promessa Real Q1/26 vs Q1/25',   v:1.7, fill:C.red},
+                    {label:'Δ atribuível ao Mix Shift',         v:0.9, fill:C.xdock},
+                    {label:'Δ atribuível à Logística Própria',  v:0.8, fill:C.yellow},
+                  ]}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C.border} horizontal={false} />
+                    <XAxis type="number" tick={{fill:C.muted,fontSize:10}} unit="d" domain={[0,2]} />
+                    <YAxis type="category" dataKey="label" tick={{fill:C.muted,fontSize:11}} width={260} />
+                    <Tooltip contentStyle={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8}} formatter={v=>`+${v}d`} />
+                    <Bar dataKey="v" radius={[0,4,4,0]}>
+                      {[C.red,C.xdock,C.yellow].map((c,i)=><Cell key={i} fill={c} opacity={0.85}/>)}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+                <AlertBox color={C.xdock} text="53% do aumento da promessa média é explicado pelo Mix Shift (Full → Crossdocking). Restaurar 8pp de share Full equivale a -0.6d de promessa média sem nenhuma mudança operacional." />
+              </ChartCard>
+            </div>
+          )}
+
+          {/* ════════════════ TAB: HIPÓTESES ════════════════ */}
+          {tab === 'hypotheses' && (
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:18}}>
+              {[
+                {
+                  n:'1',color:C.red,title:'Algoritmo de Promessa em Modo Defensivo Pós-Pico',
+                  prob:'Alta — 75%',
+                  body:'O sistema de promise usa janela histórica de 60–90 dias para calibrar SLA. O pico de Nov/Dez contaminou essa janela e o algoritmo inflou promessas como buffer preventivo. Em Q1 (volume menor), nunca houve pressão suficiente para forçar recalibração para baixo.',
+                  test:'Compare Promessa Real (dias) com SLA Contratado dos transportadores. Se promessa ao cliente > SLA real: é buffer algorítmico.',
+                  action:'Forçar reset manual da janela de calibração do algoritmo de promessa para o período Jan–Mar/2025.',
+                },
+                {
+                  n:'2',color:C.xdock,title:'Mix Shift Estrutural Full → Crossdocking',
+                  prob:'Alta — 70%',
+                  body:'Sellers com estoque Full esgotaram/não repuseram estoque nos galpões MELI durante o pico. Produtos que saíram do Full caíram para Crossdocking como fallback. Se reposição não foi concluída até Q1/2026, o mix continua exibindo mais Crossdocking — que tem promessa 2–3d maior.',
+                  test:'Query 4 (Mix Shift): compare share Full Q1/25 vs Q1/26. Queda > 10pp é sinal forte.',
+                  action:'Identificar top 50 sellers por GMV que reduziram estoque Full e criar programa de incentivo para reposição.',
+                },
+                {
+                  n:'3',color:C.yellow,title:'Gargalo Last Mile — Norte/Nordeste com Overflow',
+                  prob:'Média — 45%',
+                  body:'Volume de devoluções e reentregas de dezembro saturou a malha de last mile no Norte/Nordeste. Transportadoras priorizaram novos envios sobre reentregas, mas o acúmulo criou delay de clearance que se propagou para os CDs principais, impactando secundariamente SP e RJ via desvio de rota.',
+                  test:'Isole promessa por transportadora. Correlação devolução × degradação de promessa é o indicador-chave.',
+                  action:'Negociar SLA de clearance de devoluções com transportadoras para as regiões Norte/Nordeste.',
+                },
+                {
+                  n:'4',color:C.flex,title:'Mudança na Política de Cadastro de Sellers (Bônus)',
+                  prob:'Baixa-Média — 30%',
+                  body:'Onboarding massivo de novos sellers pós-Black Friday sem histórico de fulfillment pode ter inflado o volume Dropshipping/Crossdocking. Sellers novos tendem a ter menor adesão ao Full e promessas menos otimizadas.',
+                  test:'Segmente por seller_vintage (data de cadastro). Se sellers novos têm promessa média > 2d acima dos antigos, este fator é relevante.',
+                  action:'Criar fast-track de onboarding ao Full para sellers com GMV > R$50k/mês no primeiro trimestre.',
+                },
+              ].map(h=>(
+                <div key={h.n} style={{background:C.card,border:`1px solid ${h.color}40`,borderRadius:12,padding:20}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:12}}>
+                    <div style={{display:'flex',gap:10,alignItems:'center'}}>
+                      <div style={{width:32,height:32,background:`${h.color}25`,border:`1px solid ${h.color}50`,
+                        borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',color:h.color,fontWeight:700}}>
+                        {h.n}
+                      </div>
+                      <div style={{fontWeight:700,fontSize:15,color:C.text}}>{h.title}</div>
+                    </div>
+                    <span style={{background:`${h.color}20`,color:h.color,padding:'3px 10px',borderRadius:20,fontSize:11,whiteSpace:'nowrap',fontWeight:600}}>{h.prob}</span>
+                  </div>
+                  <p style={{color:C.muted,fontSize:13,lineHeight:1.6,marginBottom:12}}>{h.body}</p>
+                  <div style={{background:`${h.color}0A`,border:`1px solid ${h.color}25`,borderRadius:8,padding:'10px 14px',marginBottom:10}}>
+                    <div style={{color:h.color,fontWeight:600,fontSize:11,marginBottom:4}}>🔬 TESTE DE VALIDAÇÃO</div>
+                    <div style={{color:C.muted,fontSize:12}}>{h.test}</div>
+                  </div>
+                  <div style={{background:'#0F203008',border:`1px solid ${C.border}`,borderRadius:8,padding:'10px 14px'}}>
+                    <div style={{color:C.green,fontWeight:600,fontSize:11,marginBottom:4}}>⚡ AÇÃO RECOMENDADA</div>
+                    <div style={{color:C.muted,fontSize:12}}>{h.action}</div>
+                  </div>
+                </div>
+              ))}
+
+              <div style={{gridColumn:'1/-1'}}>
+                <ChartCard title="Argumento Executivo — SCQA para Diretoria" sub="Framework Situation / Complication / Question / Answer">
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:14,padding:'8px 0'}}>
+                    {[
+                      {l:'SITUATION', c:C.full, t:'Promessa cresceu +1.7d em média no Q1 2026 vs Q1 2025, com piora concentrada em Crossdocking (+2.3d) e regiões Norte/Nordeste.'},
+                      {l:'COMPLICATION', c:C.red, t:'Elasticidade de -4.8%/dia implica ~820k pedidos perdidos estimados no trimestre. Produtos R$500+ apresentam elasticidade de -8.9%/dia — 3x mais sensíveis.'},
+                      {l:'QUESTION', c:C.yellow, t:'Por que a promessa não normalizou após o pico de fim de ano, mesmo com volume menor em Q1?'},
+                      {l:'ANSWER', c:C.green, t:'Mix shift Full→Crossdocking (-12pp share) explica 53% do delta. Restante: algoritmo em modo defensivo. Ação: reposição Full top-50 sellers + reset da janela de calibração.'},
+                    ].map(s=>(
+                      <div key={s.l} style={{background:`${s.c}10`,border:`1px solid ${s.c}30`,borderRadius:10,padding:'14px'}}>
+                        <div style={{color:s.c,fontWeight:700,fontSize:11,marginBottom:8,letterSpacing:'0.08em'}}>{s.l}</div>
+                        <div style={{color:C.muted,fontSize:12,lineHeight:1.6}}>{s.t}</div>
+                      </div>
+                    ))}
+                  </div>
+                </ChartCard>
+              </div>
+            </div>
+          )}
+
+        </div>
+
+        {/* Footer */}
+        <div style={{borderTop:`1px solid ${C.border}`,padding:'14px 28px',color:C.dim,fontSize:11,textAlign:'center'}}>
+          Dashboard · Lead Time de Promessa · Dados simulados para validação estrutural
+          · Fonte real: <code style={{color:C.muted}}>meli-bi-data.DADOSNN.TBL_VISITAS_POR_PROMESSA_POR_RANGO_NN</code>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Sub-componentes ──────────────────────────────────────────────────────────
+  function ChartCard({title,sub,children}) {
+    return (
+      <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:'18px 20px'}}>
+        <div style={{marginBottom:14}}>
+          <div style={{fontWeight:600,fontSize:14,color:C.text}}>{title}</div>
+          {sub && <div style={{color:C.muted,fontSize:11,marginTop:2}}>{sub}</div>}
+        </div>
+        {children}
+      </div>
+    );
+  }
+
+  function Tag({color,children}) {
+    return (
+      <span style={{background:`${color}20`,color,padding:'2px 8px',borderRadius:4,fontSize:12,fontWeight:600}}>
+        {children}
+      </span>
+    );
+  }
+
+  function AlertBox({color,text}) {
+    return (
+      <div style={{marginTop:14,padding:'10px 14px',background:`${color}10`,border:`1px solid ${color}30`,borderRadius:8,fontSize:12,color:C.muted,lineHeight:1.5}}>
+        <strong style={{color}}>💡 Insight: </strong>{text}
+      </div>
+    );
+  }
+
+  // ─── Mount ────────────────────────────────────────────────────────────────────
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(<Dashboard />);
+  </script>
+</body>
+</html>
